@@ -1,0 +1,75 @@
+---
+name: litmus-python-ci
+on:
+  pull_request:
+    branches:
+      - master    
+defaults:
+  run:
+    shell: bash
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Checking syntax of shell script
+        run: bash -c 'shopt -s globstar nullglob; shellcheck **/*.{sh,ksh,bash}' || true
+
+      - name: Installing and configuring dependencies
+        run: make deps
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+        with:
+          platforms: all
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v1
+        with:
+          version: latest
+
+      - name: Build Image
+        run: make build
+
+ 
+  security:
+    container:
+      image: litmuschaos/snyk:1.0
+      volumes:
+      - /home/runner/work/_actions/:/home/runner/work/_actions/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: snyk/actions/setup@master
+      - name: Install packages
+        run: pip3 install -r requirements.txt
+      - run: snyk auth ${SNYK_TOKEN}
+      - name: Snyk monitor
+        run: snyk test --file=requirements.txt --command=python3
+
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build an image from Dockerfile
+        run: |
+          docker build -f Dockerfile -t docker.io/litmuschaos/py-runner:${{ github.sha }} . --build-arg TARGETARCH=amd64
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'docker.io/litmuschaos/py-runner:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
